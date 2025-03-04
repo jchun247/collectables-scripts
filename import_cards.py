@@ -97,33 +97,23 @@ def create_card_set_number(set_number, total_cards, is_modern_set):
     # Append the total cards to create the full set number
     return f"{formatted_number}/{total_cards}"
 
-def insert_cards(conn, cards_data):
-    """Insert cards one at a time and return id mapping"""
-    if not cards_data:
-        return {}
-    
-    id_mapping = {}
+def insert_card(conn, card_data):
+    """Insert a single card and return its id and set number"""
     query = """
         INSERT INTO cards (
-            name, game, set_id, set_number, rarity, illustrator_name,
+            name, game, external_id, set_id, set_number, rarity, illustrator_name,
             hit_points, flavour_text, type, retreat_cost,
             weakness_type, weakness_modifier, weakness_amount
         )
         VALUES (
-            :name, :game, :set_id, :set_number, :rarity, :illustrator_name,
+            :name, :game, :external_id, :set_id, :set_number, :rarity, :illustrator_name,
             :hit_points, :flavour_text, :type, :retreat_cost,
             :weakness_type, :weakness_modifier, :weakness_amount
         )
         RETURNING id, set_number
     """
-    
-    for item in cards_data:
-        result = conn.execute(text(query), item)
-        row = result.fetchone()
-        if row:
-            id_mapping[row[1]] = row[0]  # map set_number to id
-    
-    return id_mapping
+    result = conn.execute(text(query), card_data)
+    return result.fetchone()
 
 def get_json_files(directory='./data/cards'):
     """Get all JSON files in the specified directory"""
@@ -155,8 +145,6 @@ def import_cards(file_path):
         logging.info(f"Processing {len(data)} cards")
         
         with engine.begin() as conn:
-            # Process cards
-            cards_data = []
             # Get set ID from filename
             set_id = get_set_id_from_filename(file_path, conn)
             logging.info(f"Importing cards for set ID: {set_id}")
@@ -165,6 +153,8 @@ def import_cards(file_path):
             total_cards = get_set_printedtotal(set_id, conn)
             is_modern_set = check_if_set_after_swsh(set_id, conn)
             
+            # Process and insert all card data in a single pass
+            cards_processed = 0
             for item in data:
                 # Extract weakness data
                 weakness = item.get('weaknesses', [{}])[0] if item.get('weaknesses') else {}
@@ -183,6 +173,7 @@ def import_cards(file_path):
                 
                 card_data = {
                     'name': item['name'],
+                    'external_id': item['id'],
                     'game': 'POKEMON',
                     'set_id': set_id,
                     'set_number': set_number,
@@ -196,12 +187,103 @@ def import_cards(file_path):
                     'weakness_modifier': weakness_modifier,
                     'weakness_amount': weakness_multiplier
                 }
-                cards_data.append(card_data)
-            
-            # Insert cards
-            logging.info(f"Inserting {len(cards_data)} cards")
-            id_mapping = insert_cards(conn, cards_data)
-            logging.info(f"Created {len(id_mapping)} card-to-id mappings")
+                
+                # Insert card and get ID
+                row = insert_card(conn, card_data)
+                if row:
+                    cards_processed += 1
+                    card_id = row[0]
+                    
+                    # Process attacks and attack costs for this card immediately
+                    for attack in item.get('attacks', []):
+                        # Insert attack
+                        attack_result = conn.execute(
+                            text("""
+                                INSERT INTO card_attacks (card_id, name, damage, text)
+                                VALUES (:card_id, :name, :damage, :text)
+                                RETURNING id
+                            """),
+                            {
+                                'card_id': card_id,
+                                'name': attack.get('name'),
+                                'damage': attack.get('damage'),
+                                'text': attack.get('text')
+                            }
+                        )
+                        attack_id = attack_result.fetchone()[0]
+                        
+                        # Handle attack costs
+                        costs = attack.get('cost', [])
+                        if not costs:
+                            # If attack has no energy cost requirements, store as 'FREE'
+                            conn.execute(
+                                text("""
+                                    INSERT INTO card_attack_costs (attack_id, cost)
+                                    VALUES (:attack_id, :cost)
+                                """),
+                                {
+                                    'attack_id': attack_id,
+                                    'cost': 'FREE'
+                                }
+                            )
+                        else:
+                            # Insert each energy cost
+                            for cost in costs:
+                                conn.execute(
+                                    text("""
+                                        INSERT INTO card_attack_costs (attack_id, cost)
+                                        VALUES (:attack_id, :cost)
+                                    """),
+                                    {
+                                        'attack_id': attack_id,
+                                        'cost': cost
+                                    }
+                                )
+
+                    # Process card abilities
+                    for ability in item.get('abilities', []):
+                        conn.execute(
+                            text("""
+                                INSERT INTO card_abilities (card_id, name, text, type)
+                                VALUES (:card_id, :name, :text, :type)
+                            """),
+                            {
+                                'card_id': card_id,
+                                'name': ability.get('name'),
+                                'text': ability.get('text'),
+                                'type': ability.get('type')
+                            }
+                        )
+
+                    # Process card subtypes
+                    for subtype in item.get('subtypes', []):
+                        conn.execute(
+                            text("""
+                                INSERT INTO card_subtypes (card_id, subtype)
+                                VALUES (:card_id, :subtype)
+                            """),
+                            {
+                                'card_id': card_id,
+                                'subtype': subtype
+                            }
+                        )
+                    
+                    # Process card images
+                    for resolution, url in item.get('images', {}).items():
+                        conn.execute(
+                            text("""
+                                INSERT INTO card_images (card_id, resolution, url)
+                                VALUES (:card_id, :resolution, :url)
+                            """),
+                            {
+                                'card_id': card_id,
+                                'resolution': resolution,
+                                'url': url
+                            }
+                        )
+
+                
+            logging.info(f"Processed {cards_processed} cards")
 
         
         logging.info("Import completed successfully")
