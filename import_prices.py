@@ -30,34 +30,70 @@ def connect_to_db():
         raise
 
 def insert_price_data(conn, card_id, price_data, finish, updated_at):
-    """Insert or update price data for a card variant"""
-    query = """
-        INSERT INTO card_price (
-            card_id,
-            finish,
-            updated_at,
-            condition,
-            price
-        )
-        VALUES (
-            :card_id,
-            :finish,
-            :updated_at,
-            :condition,
-            :price
-        )
-        ON CONFLICT (card_id, finish, condition)
-        DO UPDATE SET
-            price = EXCLUDED.price,
-            updated_at = EXCLUDED.updated_at
-    """
+    """Insert or update price data for a card variant, tracking price history"""
     try:
-        conn.execute(text(query), {
+        # First check if there's an existing price record with different timestamp
+        check_query = """
+            SELECT id, updated_at, price 
+            FROM card_price 
+            WHERE card_id = :card_id 
+            AND finish = :finish 
+            AND condition = 'NEAR_MINT'
+        """
+        result = conn.execute(text(check_query), {
+            'card_id': card_id,
+            'finish': finish
+        })
+        existing_price = result.fetchone()
+        new_price = price_data.get('market')
+
+        if existing_price:
+            # If timestamp is different, add to price history
+            if existing_price[1] != updated_at and new_price is not None:
+                history_query = """
+                    INSERT INTO card_price_history (
+                        card_price_id,
+                        price,
+                        timestamp
+                    ) VALUES (
+                        :card_price_id,
+                        :price,
+                        :timestamp
+                    )
+                """
+                conn.execute(text(history_query), {
+                    'card_price_id': existing_price[0],
+                    'price': new_price,
+                    'timestamp': updated_at
+                })
+
+        # Now proceed with normal price update
+        update_query = """
+            INSERT INTO card_price (
+                card_id,
+                finish,
+                updated_at,
+                condition,
+                price
+            )
+            VALUES (
+                :card_id,
+                :finish,
+                :updated_at,
+                :condition,
+                :price
+            )
+            ON CONFLICT ON CONSTRAINT card_price_card_id_finish_condition_key
+            DO UPDATE SET
+                price = EXCLUDED.price,
+                updated_at = EXCLUDED.updated_at
+        """
+        conn.execute(text(update_query), {
             'card_id': card_id,
             'finish': finish,
             'updated_at': updated_at,
             'condition': 'NEAR_MINT',
-            'price': price_data.get('market')
+            'price': new_price
         })
     except Exception as e:
         logging.error(f"Failed to insert price data for card {card_id} {e}")
