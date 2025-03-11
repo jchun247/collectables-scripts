@@ -81,12 +81,14 @@ def insert_card(conn, card_data):
         INSERT INTO cards (
             name, game, external_id, set_id, set_number, rarity, illustrator_name,
             hit_points, flavour_text, type, retreat_cost,
-            weakness_type, weakness_modifier, weakness_amount
+            weakness_type, weakness_modifier, weakness_amount,
+            resistance_type, resistance_modifier, resistance_amount
         )
         VALUES (
             :name, :game, :external_id, :set_id, :set_number, :rarity, :illustrator_name,
             :hit_points, :flavour_text, :type, :retreat_cost,
-            :weakness_type, :weakness_modifier, :weakness_amount
+            :weakness_type, :weakness_modifier, :weakness_amount,
+            :resistance_type, :resistance_modifier, :resistance_amount
         )
         RETURNING id, set_number
     """
@@ -140,6 +142,12 @@ def import_cards(file_path):
                 weakness_modifier = weakness_value[0] if weakness_value else None
                 weakness_multiplier = int(weakness_value[1:]) if weakness_value else None
                 
+                # Extract resistance data
+                resistance = item.get('resistances', [{}])[0] if item.get('resistances') else {}
+                resistance_value = resistance.get('value', '')
+                resistance_modifier = resistance_value[0] if resistance_value else None
+                resistance_multiplier = int(resistance_value[1:]) if resistance_value else None
+
                 # Get the first type if available
                 type_ = item.get('types', [''])[0]
                 
@@ -163,7 +171,10 @@ def import_cards(file_path):
                     'retreat_cost': item.get('convertedRetreatCost', 0),
                     'weakness_type': weakness.get('type'),
                     'weakness_modifier': weakness_modifier,
-                    'weakness_amount': weakness_multiplier
+                    'weakness_amount': weakness_multiplier,
+                    'resistance_type': resistance.get('type'),
+                    'resistance_modifier': resistance_modifier,
+                    'resistance_amount': resistance_multiplier
                 }
                 
                 # Insert card and get ID
