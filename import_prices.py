@@ -1,37 +1,17 @@
 import json
 import logging
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from datetime import datetime
 import os
 from dotenv import load_dotenv
 import requests
+from db_utils import connect_to_db
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
-# Load environment variables
+# Load API token
 load_dotenv()
-DB_URI = os.getenv('DATABASE_URL')
-if not DB_URI:
-    raise ValueError("DATABASE_URL environment variable is not set")
 API_TOKEN = os.getenv('API_TOKEN')
 if not API_TOKEN:
     raise ValueError("API_TOKEN environment variable is not set")
-
-def connect_to_db():
-    try:
-        engine = create_engine(DB_URI)
-        # Test connection
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        logging.info("Database connection successful")
-        return engine
-    except Exception as e:
-        logging.error(f"Database connection failed: {e}")
-        raise
 
 def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
     """Insert or update price data for a card variant, tracking price history"""
