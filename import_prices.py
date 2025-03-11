@@ -14,8 +14,12 @@ logging.basicConfig(
 
 # Load environment variables
 load_dotenv()
-DB_URI = 'postgresql://postgres:week7day@localhost:5432/collectables?options=-c%20search_path=collectables'
+DB_URI = os.getenv('DATABASE_URL')
+if not DB_URI:
+    raise ValueError("DATABASE_URL environment variable is not set")
 API_TOKEN = os.getenv('API_TOKEN')
+if not API_TOKEN:
+    raise ValueError("API_TOKEN environment variable is not set")
 
 def connect_to_db():
     try:
@@ -44,12 +48,13 @@ def insert_price_data(conn, card_id, price_data, finish, updated_at):
             'card_id': card_id,
             'finish': finish
         })
-        existing_price = result.fetchone()
-        new_price = price_data.get('market')
+        existing_price_data = result.fetchone()
 
-        if existing_price:
+        if existing_price_data:
             # If timestamp is different, add to price history
-            if existing_price[1] != updated_at and new_price is not None:
+            existing_timestamp = existing_price_data[1]
+            old_price = existing_price_data[2]
+            if existing_price_data[1] != updated_at and new_price is not None:
                 history_query = """
                     INSERT INTO card_price_history (
                         card_price_id,
@@ -62,9 +67,9 @@ def insert_price_data(conn, card_id, price_data, finish, updated_at):
                     )
                 """
                 conn.execute(text(history_query), {
-                    'card_price_id': existing_price[0],
+                    'card_price_id': existing_price_data[0],
                     'price': new_price,
-                    'timestamp': updated_at
+                    'timestamp': existing_timestamp
                 })
 
         # Now proceed with normal price update
@@ -88,6 +93,7 @@ def insert_price_data(conn, card_id, price_data, finish, updated_at):
                 price = EXCLUDED.price,
                 updated_at = EXCLUDED.updated_at
         """
+        new_price = price_data.get('market')
         conn.execute(text(update_query), {
             'card_id': card_id,
             'finish': finish,
@@ -100,7 +106,7 @@ def insert_price_data(conn, card_id, price_data, finish, updated_at):
         raise
 
 def process_card_prices(card_data):
-    """Process TCGPlayer price data for a card"""
+    """Process price data for a card"""
     try:
         engine = connect_to_db()
         

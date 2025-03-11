@@ -14,7 +14,9 @@ logging.basicConfig(
 
 # Load environment variables
 load_dotenv()
-DB_URI = 'postgresql://postgres:week7day@localhost:5432/collectables?options=-c%20search_path=collectables'
+DB_URI = os.getenv('DATABASE_URL')
+if not DB_URI:
+    raise ValueError("DATABASE_URL environment variable is not set")
 
 def connect_to_db():
     try:
