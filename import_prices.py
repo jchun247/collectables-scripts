@@ -33,7 +33,7 @@ def connect_to_db():
         logging.error(f"Database connection failed: {e}")
         raise
 
-def insert_price_data(conn, card_id, price_data, finish, updated_at):
+def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
     """Insert or update price data for a card variant, tracking price history"""
     try:
         # First check if there's an existing price record with different timestamp
@@ -46,7 +46,8 @@ def insert_price_data(conn, card_id, price_data, finish, updated_at):
         """
         result = conn.execute(text(check_query), {
             'card_id': card_id,
-            'finish': finish
+            'finish': finish,
+            'condition': condition
         })
         existing_price_data = result.fetchone()
 
@@ -54,7 +55,7 @@ def insert_price_data(conn, card_id, price_data, finish, updated_at):
             # If timestamp is different, add to price history
             existing_timestamp = existing_price_data[1]
             old_price = existing_price_data[2]
-            if existing_price_data[1] != updated_at and new_price is not None:
+            if existing_timestamp != updated_at and old_price is not None:
                 history_query = """
                     INSERT INTO card_price_history (
                         card_price_id,
@@ -68,7 +69,7 @@ def insert_price_data(conn, card_id, price_data, finish, updated_at):
                 """
                 conn.execute(text(history_query), {
                     'card_price_id': existing_price_data[0],
-                    'price': new_price,
+                    'price': old_price,
                     'timestamp': existing_timestamp
                 })
 
@@ -123,19 +124,21 @@ def process_card_prices(card_data):
 
             card_id = card_row[0]
             tcgplayer_data = card_data.get('tcgplayer', {})
-            updated_at = datetime.strptime(tcgplayer_data['updatedAt'], '%Y/%m/%d').date()
+            # Convert to timestamp to match database type
+            updated_at = datetime.strptime(tcgplayer_data['updatedAt'], '%Y/%m/%d')
             prices = tcgplayer_data.get('prices', {})
+            condition = 'NEAR_MINT'
 
             # Process normal variant prices
             if 'normal' in prices:
-                insert_price_data(conn, card_id, prices['normal'], 'NORMAL', updated_at)
+                insert_price_data(conn, card_id, prices['normal'], 'NORMAL', condition, updated_at)
 
             if 'holofoil' in prices:
-                insert_price_data(conn, card_id, prices['holofoil'], 'HOLOFOIL', updated_at)
+                insert_price_data(conn, card_id, prices['holofoil'], 'HOLOFOIL', condition, updated_at)
 
             # Process reverse holofoil variant prices
             if 'reverseHolofoil' in prices:
-                insert_price_data(conn, card_id, prices['reverseHolofoil'], 'REVERSE_HOLO', updated_at)
+                insert_price_data(conn, card_id, prices['reverseHolofoil'], 'REVERSE_HOLO', condition, updated_at)
 
             logging.info(f"Successfully processed prices for card ID: {card_id}")
 
