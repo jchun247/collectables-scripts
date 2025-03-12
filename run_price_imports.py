@@ -156,8 +156,8 @@ def main():
     parser = argparse.ArgumentParser(description='Run card price imports in parallel')
     parser.add_argument(
         '--base-url',
-        default='https://api.pokemontcg.io/v2/cards',
-        help='Base API URL (default: https://api.pokemontcg.io/v2/cards)'
+        default='https://api.pokemontcg.io/v2/cards?select=id,name,tcgplayer',
+        help='Base API URL (default: https://api.pokemontcg.io/v2/cards?select=id,name,tcgplayer)'
     )
     parser.add_argument(
         '--workers',
@@ -172,7 +172,7 @@ def main():
     # Get endpoints from the database
     try:
         set_ids = get_set_ids()
-        endpoints = [f"{args.base_url}?q=set.id:{set_id}" for set_id in set_ids]
+        endpoints = [f"{args.base_url}&q=set.id:{set_id}" for set_id in set_ids]
         logging.info(f"Generated {len(endpoints)} endpoints from set IDs in database")
     except Exception as e:
         logging.error(f"Failed to generate endpoints from database: {e}")
