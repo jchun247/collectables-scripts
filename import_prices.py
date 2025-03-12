@@ -1,4 +1,3 @@
-import json
 import logging
 from sqlalchemy import text
 from datetime import datetime
@@ -104,7 +103,15 @@ def process_card_prices(card_data):
 
             card_id = card_row[0]
             tcgplayer_data = card_data.get('tcgplayer', {})
+            if not tcgplayer_data:
+                logging.info(f"No TCGPlayer data available for card {card_data['id']}, skipping")
+                return
+                
             # Convert to timestamp to match database type
+            if 'updatedAt' not in tcgplayer_data:
+                logging.warning(f"Missing updatedAt for card {card_data['id']}, skipping")
+                return
+                
             updated_at = datetime.strptime(tcgplayer_data['updatedAt'], '%Y/%m/%d')
             prices = tcgplayer_data.get('prices', {})
             condition = 'NEAR_MINT'
