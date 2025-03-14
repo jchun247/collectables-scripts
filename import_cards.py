@@ -1,8 +1,6 @@
 import json
-import pandas as pd
 import logging
 from sqlalchemy import text, inspect
-from datetime import datetime
 import os
 from db_utils import connect_to_db
 
@@ -47,17 +45,40 @@ def check_if_set_after_swsh(set_id, conn):
     return row[0] if row else False
 
 def create_card_set_number(set_number, total_cards, is_modern_set):
-    """Create a standardized card set number in format XXX/YYY"""
+    """Create a standardized card set number in format XXX/YYY or PREFIX00/PREFIX00"""
     if not set_number or not set_number.strip():
         return None
-    
-    # Remove any non-numeric characters
-    numeric_part = ''.join(filter(str.isdigit, set_number))
-    if not numeric_part:
+
+    # Check for gallery patterns (TG01/TG30 or GG04/GG70)
+    import re
+    gallery_match = re.match(r'^(TG|GG)(\d+)(?:/(?:TG|GG)\d+)?$', set_number)
+    if gallery_match:
+        prefix = gallery_match.group(1)  # TG or GG
+        number = int(gallery_match.group(2))
+        # Always use 2-digit padding for gallery cards
+        formatted_number = f"{number:02d}"
+        return f"{prefix}{formatted_number}/{prefix}{total_cards}"
+
+    # Handle regular card numbers
+    parts = set_number.split('/')
+    if not parts:
         return None
+        
+    original_number = parts[0]
     
-    # Convert to integer
-    number = int(numeric_part)
+    # Extract first group of digits
+    match = re.search(r'(\d+)', original_number)
+    if not match:
+        return None
+        
+    # Get position where the number starts and ends
+    start = match.start()
+    end = match.end()
+    
+    # Get the parts before, during, and after the number
+    prefix = original_number[:start]
+    number = int(match.group(1))
+    suffix = original_number[end:]
     
     if is_modern_set:
         # Modern sets use fixed leading zeros
@@ -68,25 +89,24 @@ def create_card_set_number(set_number, total_cards, is_modern_set):
         else:
             formatted_number = str(number)
     else:
-        # Legacy sets use padding based on total cards
-        max_digits = len(str(total_cards))
-        formatted_number = f"{number:0{max_digits}d}"
+        # Legacy sets use original number without padding
+        formatted_number = str(number)
     
-    # Append the total cards to create the full set number
-    return f"{formatted_number}/{total_cards}"
+    # Reconstruct the number with any original prefix/suffix preserved exactly
+    return f"{prefix}{formatted_number}{suffix}/{total_cards}"
 
 def insert_card(conn, card_data):
     """Insert a single card and return its id and set number"""
     query = """
         INSERT INTO cards (
             name, game, external_id, set_id, set_number, rarity, illustrator_name,
-            hit_points, flavour_text, type, retreat_cost,
+            hit_points, flavour_text, retreat_cost,
             weakness_type, weakness_modifier, weakness_amount,
             resistance_type, resistance_modifier, resistance_amount
         )
         VALUES (
             :name, :game, :external_id, :set_id, :set_number, :rarity, :illustrator_name,
-            :hit_points, :flavour_text, :type, :retreat_cost,
+            :hit_points, :flavour_text, :retreat_cost,
             :weakness_type, :weakness_modifier, :weakness_amount,
             :resistance_type, :resistance_modifier, :resistance_amount
         )
@@ -147,9 +167,6 @@ def import_cards(file_path):
                 resistance_value = resistance.get('value', '')
                 resistance_modifier = resistance_value[0] if resistance_value else None
                 resistance_multiplier = int(resistance_value[1:]) if resistance_value else None
-
-                # Get the first type if available
-                type_ = item.get('types', [''])[0]
                 
                 # Convert HP to integer
                 hp = int(item.get('hp', 0)) if item.get('hp', '').isdigit() else None
@@ -167,7 +184,6 @@ def import_cards(file_path):
                     'illustrator_name': item.get('artist'),
                     'hit_points': hp,
                     'flavour_text': item.get('flavorText'),
-                    'type': type_,
                     'retreat_cost': item.get('convertedRetreatCost', 0),
                     'weakness_type': weakness.get('type'),
                     'weakness_modifier': weakness_modifier,
@@ -241,6 +257,19 @@ def import_cards(file_path):
                                 'name': ability.get('name'),
                                 'text': ability.get('text'),
                                 'type': ability.get('type')
+                            }
+                        )
+
+                    # Process card types
+                    for card_type in item.get('types', []):
+                        conn.execute(
+                            text("""
+                                INSERT INTO card_types (card_id, type)
+                                VALUES (:card_id, :type)
+                            """),
+                            {
+                                'card_id': card_id,
+                                'type': card_type
                             }
                         )
 
