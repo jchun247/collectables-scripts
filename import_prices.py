@@ -13,7 +13,8 @@ if not API_TOKEN:
     raise ValueError("API_TOKEN environment variable is not set")
 
 def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
-    """Insert or update price data for a card variant, tracking price history"""
+    """Insert or update price data for a card variant, tracking price history.
+    Only maintains 1 year of historical price data."""
     try:
         # First check if there's an existing price record with different timestamp
         check_query = """
@@ -46,10 +47,21 @@ def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
                         :timestamp
                     )
                 """
+                # Insert the historical price
                 conn.execute(text(history_query), {
                     'card_price_id': existing_price_data[0],
                     'price': old_price,
                     'timestamp': existing_timestamp
+                })
+                
+                # Delete historical prices older than 1 year
+                cleanup_query = """
+                    DELETE FROM card_price_history
+                    WHERE card_price_id = :card_price_id
+                    AND timestamp < CURRENT_DATE - INTERVAL '1 year'
+                """
+                conn.execute(text(cleanup_query), {
+                    'card_price_id': existing_price_data[0]
                 })
 
         # Now proceed with normal price update
