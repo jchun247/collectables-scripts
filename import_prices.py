@@ -22,7 +22,7 @@ def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
             FROM card_price 
             WHERE card_id = :card_id 
             AND finish = :finish 
-            AND condition = 'NEAR_MINT'
+            AND condition = :condition
         """
         result = conn.execute(text(check_query), {
             'card_id': card_id,
@@ -38,18 +38,24 @@ def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
             if existing_timestamp != updated_at and old_price is not None:
                 history_query = """
                     INSERT INTO card_price_history (
-                        card_price_id,
+                        card_id,
+                        finish,
+                        condition,
                         price,
                         timestamp
                     ) VALUES (
-                        :card_price_id,
+                        :card_id,
+                        :finish,
+                        :condition,
                         :price,
                         :timestamp
                     )
                 """
                 # Insert the historical price
                 conn.execute(text(history_query), {
-                    'card_price_id': existing_price_data[0],
+                    'card_id': card_id,
+                    'finish': finish,
+                    'condition': condition,
                     'price': old_price,
                     'timestamp': existing_timestamp
                 })
@@ -57,11 +63,15 @@ def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
                 # Delete historical prices older than 1 year
                 cleanup_query = """
                     DELETE FROM card_price_history
-                    WHERE card_price_id = :card_price_id
+                    WHERE card_id = :card_id
+                    AND finish = :finish
+                    AND condition = :condition
                     AND timestamp < CURRENT_DATE - INTERVAL '1 year'
                 """
                 conn.execute(text(cleanup_query), {
-                    'card_price_id': existing_price_data[0]
+                    'card_id': card_id,
+                    'finish': finish,
+                    'condition': condition
                 })
 
         # Now proceed with normal price update
@@ -90,7 +100,7 @@ def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
             'card_id': card_id,
             'finish': finish,
             'updated_at': updated_at,
-            'condition': 'NEAR_MINT',
+            'condition': condition,
             'price': new_price
         })
     except Exception as e:
