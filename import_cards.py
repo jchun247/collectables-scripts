@@ -485,7 +485,6 @@ def import_cards(file_path):
                 # Insert/update card
                 try:
                     row = insert_card(conn, card_data, pokemon_data)
-                    logging.info(f"Successfully processed card: {card_data['name']} ({card_data['external_id']})")
                     if row:
                         card_id = row[0]
                         
@@ -512,7 +511,7 @@ def import_cards(file_path):
                 
             logging.info(f"Processed {cards_processed} cards")
 
-        logging.info("Import completed successfully")
+        logging.info("Successfully imported cards from file: {file_path}")
         
     except Exception as e:
         logging.error(f"Import failed: {str(e)}")
