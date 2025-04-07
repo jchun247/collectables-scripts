@@ -52,37 +52,77 @@ def insert_sets(conn, sets_data):
     for item in sets_data:
         conn.execute(text(query), item)
 
-def insert_legalities(conn, legalities_data):
-    """Insert set legalities"""
+def upsert_legalities(conn, legalities_data):
+    """Upsert set legalities"""
     if not legalities_data:
         return
-    
-    # First delete all existing legalities as we'll insert fresh data
-    conn.execute(text("DELETE FROM set_legalities"))
-    
-    query = """
-        INSERT INTO set_legalities (set_id, format, legality)
-        VALUES (:set_id, :format, :legality)
-    """
-    
-    for item in legalities_data:
-        conn.execute(text(query), item)
 
-def insert_images(conn, images_data):
-    """Insert set images"""
+    # First get existing legalities to determine what needs to be updated/inserted
+    existing = conn.execute(text("SELECT set_id, format, legality FROM set_legalities")).fetchall()
+    existing_keys = {(row[0], row[1]): row[2] for row in existing}
+    
+    to_insert = []
+    to_update = []
+    for item in legalities_data:
+        key = (item['set_id'], item['format'])
+        if key not in existing_keys:
+            to_insert.append(item)
+        elif existing_keys[key] != item['legality']:
+            to_update.append(item)
+            
+    if to_insert:
+        logging.info(f"Inserting {len(to_insert)} new legality records")
+        query = """
+            INSERT INTO set_legalities (set_id, format, legality)
+            VALUES (:set_id, :format, :legality)
+        """
+        conn.execute(text(query), to_insert)
+        
+    if to_update:
+        logging.info(f"Updating {len(to_update)} existing legality records")
+        query = """
+            UPDATE set_legalities 
+            SET legality = :legality
+            WHERE set_id = :set_id AND format = :format
+        """
+        for item in to_update:
+            conn.execute(text(query), item)
+
+def upsert_images(conn, images_data):
+    """Upsert set images"""
     if not images_data:
         return
     
-    # First delete all existing images as we'll insert fresh data
-    conn.execute(text("DELETE FROM set_images"))
+    # First get existing images to determine what needs to be updated/inserted
+    existing = conn.execute(text("SELECT set_id, image_type, url FROM set_images")).fetchall()
+    existing_keys = {(row[0], row[1]): row[2] for row in existing}
     
-    query = """
-        INSERT INTO set_images (set_id, image_type, url)
-        VALUES (:set_id, :image_type, :url)
-    """
-    
+    to_insert = []
+    to_update = []
     for item in images_data:
-        conn.execute(text(query), item)
+        key = (item['set_id'], item['image_type'])
+        if key not in existing_keys:
+            to_insert.append(item)
+        elif existing_keys[key] != item['url']:
+            to_update.append(item)
+            
+    if to_insert:
+        logging.info(f"Inserting {len(to_insert)} new image records")
+        query = """
+            INSERT INTO set_images (set_id, image_type, url)
+            VALUES (:set_id, :image_type, :url)
+        """
+        conn.execute(text(query), to_insert)
+        
+    if to_update:
+        logging.info(f"Updating {len(to_update)} existing image records")
+        query = """
+            UPDATE set_images 
+            SET url = :url
+            WHERE set_id = :set_id AND image_type = :image_type
+        """
+        for item in to_update:
+            conn.execute(text(query), item)
 
 def import_card_sets(file_path='./data/ptcg_sets.json'):
     try:
@@ -92,7 +132,7 @@ def import_card_sets(file_path='./data/ptcg_sets.json'):
         # Read JSON file
         logging.info(f"Reading data from {file_path}")
         with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)['data']
+            data = json.load(f)
         
         logging.info(f"Processing {len(data)} card sets")
         
@@ -134,8 +174,8 @@ def import_card_sets(file_path='./data/ptcg_sets.json'):
                     })
             
             if legalities_data:
-                logging.info(f"Inserting legality records")
-                insert_legalities(conn, legalities_data)
+                logging.info("Processing legality records")
+                upsert_legalities(conn, legalities_data)
             
             # Process images data
             images_data = []
@@ -148,8 +188,8 @@ def import_card_sets(file_path='./data/ptcg_sets.json'):
                     })
             
             if images_data:
-                logging.info(f"Inserting image records")
-                insert_images(conn, images_data)
+                logging.info("Processing image records")
+                upsert_images(conn, images_data)
                 
         logging.info("Import completed successfully")
         
