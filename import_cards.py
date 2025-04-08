@@ -491,17 +491,15 @@ def import_cards(file_path):
                         # Sync data common to all cards
                         sync_card_subtypes(conn, card_id, item.get('subtypes', []))
                         sync_card_images(conn, card_id, item.get('images', {}))
+                        sync_card_rules(conn, card_id, item.get('rules', []))
                         
-                        # Sync Pokemon-specific data only for Pokemon cards
+                        # Sync Pokemon-specific data for Pokemon cards
                         if supertype == 'Pokémon':
                             pokemon_details_id = update_pokemon_details(conn, card_id, pokemon_data)
                             if pokemon_details_id:
                                 sync_card_attacks(conn, pokemon_details_id, item.get('attacks', []))
                                 sync_card_abilities(conn, pokemon_details_id, item.get('abilities', []))
                                 sync_card_types(conn, pokemon_details_id, item.get('types', []))
-                        # Otherwise, sync trainer and energy rules
-                        else:
-                            sync_card_rules(conn, card_id, item.get('rules', []))
                         
                         cards_processed += 1
                 except Exception as e:
