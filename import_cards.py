@@ -509,7 +509,7 @@ def import_cards(file_path):
                 
             logging.info(f"Processed {cards_processed} cards")
 
-        logging.info("Successfully imported cards from file: {file_path}")
+        logging.info(f"Successfully imported cards from file: {file_path}")
         
     except Exception as e:
         logging.error(f"Import failed: {str(e)}")
