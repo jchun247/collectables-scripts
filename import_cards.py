@@ -133,23 +133,14 @@ def sync_card_attacks(conn, pokemon_details_id, attacks):
         
         # Handle attack costs
         costs = attack.get('cost', ['FREE'])
-        current_costs = conn.execute(text("SELECT id, cost FROM card_attack_costs WHERE attack_id = :attack_id"), {"attack_id": attack_id}).fetchall()
         
-        processed_costs = set()
-        cost_map = {c.cost: c for c in current_costs} if current_costs else {}
+        # Delete existing costs for this attack before reinserting
+        conn.execute(text("DELETE FROM card_attack_costs WHERE attack_id = :attack_id"), {"attack_id": attack_id})
         
+        # Insert all costs, including duplicates
         for cost in costs:
-            if cost in cost_map:
-                processed_costs.add(cost_map[cost].id)
-            else:
-                result = conn.execute(text("INSERT INTO card_attack_costs (attack_id, cost) VALUES (:attack_id, :cost) RETURNING id"),
-                                    {'attack_id': attack_id, 'cost': cost})
-                processed_costs.add(result.fetchone()[0])
-        
-        # Remove old costs
-        for cost in current_costs or []:
-            if cost.id not in processed_costs:
-                conn.execute(text("DELETE FROM card_attack_costs WHERE id = :id"), {"id": cost.id})
+            conn.execute(text("INSERT INTO card_attack_costs (attack_id, cost) VALUES (:attack_id, :cost)"),
+                        {'attack_id': attack_id, 'cost': cost})
     
     # Remove old attacks
     for attack in current_attacks or []:
