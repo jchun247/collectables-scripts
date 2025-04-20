@@ -96,13 +96,14 @@ def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
                 updated_at = EXCLUDED.updated_at
         """
         new_price = price_data.get('market')
-        conn.execute(text(update_query), {
-            'card_id': card_id,
-            'finish': finish,
-            'updated_at': updated_at,
-            'condition': condition,
-            'price': new_price
-        })
+        if new_price is not None:
+            conn.execute(text(update_query), {
+                'card_id': card_id,
+                'finish': finish,
+                'updated_at': updated_at,
+                'condition': condition,
+                'price': new_price
+            })
     except Exception as e:
         logging.error(f"Failed to insert price data for card {card_id} {e}")
         raise
