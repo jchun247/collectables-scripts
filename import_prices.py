@@ -96,6 +96,15 @@ def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
                 updated_at = EXCLUDED.updated_at
         """
         new_price = price_data.get('market')
+        if new_price is None:
+            new_price = price_data.get('mid')
+        if new_price is None:
+            new_price = price_data.get('low')
+        if new_price is None:
+            new_price = price_data.get('high')
+        if new_price is None:
+            new_price = price_data.get('directLow')
+            
         conn.execute(text(update_query), {
             'card_id': card_id,
             'finish': finish,
