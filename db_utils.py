@@ -1,7 +1,7 @@
 import logging
 import os
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from urllib.parse import quote_plus
 
 # Configure logging
 logging.basicConfig(
@@ -9,11 +9,20 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# Load environment variables
-load_dotenv()
-DB_URI = os.getenv('DATABASE_URL')
-if not DB_URI:
-    raise ValueError("DATABASE_URL environment variable is not set")
+# Get database connection parameters from system environment variables
+DB_USER = os.getenv('APP_LIQUIBASE_USER')
+DB_PASSWORD = os.getenv('APP_LIQUIBASE_PASSWORD')
+DB_URL = os.getenv('DB_URL')
+
+# Validate all required environment variables are set
+if not all([DB_USER, DB_PASSWORD, DB_URL]):
+    raise ValueError("DB_USER, DB_PASSWORD, and DB_URL environment variables must be set")
+
+# URL-encode the password to handle special characters like '@'
+ENCODED_DB_PASSWORD = quote_plus(DB_PASSWORD)
+
+# Construct database URI
+DB_URI = f'postgresql://{DB_USER}:{ENCODED_DB_PASSWORD}@{DB_URL}/collectables?options=-c%20search_path=collectables'
 
 def connect_to_db():
     try:
