@@ -59,20 +59,6 @@ def insert_price_data(conn, card_id, price_data, finish, condition, updated_at):
                     'price': old_price,
                     'timestamp': existing_timestamp
                 })
-                
-                # Delete historical prices older than 1 year
-                cleanup_query = """
-                    DELETE FROM card_price_history
-                    WHERE card_id = :card_id
-                    AND finish = :finish
-                    AND condition = :condition
-                    AND timestamp < CURRENT_DATE - INTERVAL '1 year'
-                """
-                conn.execute(text(cleanup_query), {
-                    'card_id': card_id,
-                    'finish': finish,
-                    'condition': condition
-                })
 
         # Now proceed with normal price update
         update_query = """
@@ -133,17 +119,21 @@ def process_card_prices(card_data):
                 return
 
             card_id = card_row[0]
+
+            # Get the current date for this run, with time set to midnight for consistency
+            # This ensures that if the script is run multiple times on the same day,
+            # the timestamp remains the same, aligning with previous date-only precision.
+            updated_at = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
             tcgplayer_data = card_data.get('tcgplayer', {})
             if not tcgplayer_data:
-                logging.info(f"No TCGPlayer data available for card {card_data['id']}, skipping")
+                # If tcgplayer_data itself is missing, we can't get prices from it.
+                logging.info(f"No TCGPlayer data (price source) available for card {card_data['id']}, skipping")
                 return
                 
-            # Convert to timestamp to match database type
-            if 'updatedAt' not in tcgplayer_data:
-                logging.warning(f"Missing updatedAt for card {card_data['id']}, skipping")
-                return
-                
-            updated_at = datetime.strptime(tcgplayer_data['updatedAt'], '%Y/%m/%d')
+            # Note: The 'updatedAt' field from tcgplayer_data is no longer the source for the main timestamp.
+            # The timestamp for price records is now based on the execution time of this script.
+            
             prices = tcgplayer_data.get('prices', {})
             condition = 'NEAR_MINT'
 
