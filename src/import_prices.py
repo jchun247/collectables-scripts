@@ -4,7 +4,7 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 import requests
-from db_utils import connect_to_db
+from src.db_utils import connect_to_db
 
 # Load API token
 load_dotenv()

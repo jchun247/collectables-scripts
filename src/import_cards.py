@@ -2,7 +2,7 @@ import json
 import logging
 from sqlalchemy import text, inspect
 import os
-from db_utils import connect_to_db
+from src.db_utils import connect_to_db
 
 def get_set_id_from_filename(file_path, conn):
     """Get set id from filename"""

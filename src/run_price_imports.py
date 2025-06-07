@@ -7,7 +7,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List
 import time
 from pathlib import Path
-from db_utils import connect_to_db
+from src.db_utils import connect_to_db
 from sqlalchemy import text
 
 # Configure logging

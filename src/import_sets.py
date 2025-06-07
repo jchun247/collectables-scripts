@@ -3,7 +3,7 @@ import pandas as pd
 import logging
 from sqlalchemy import text, inspect
 from datetime import datetime
-from db_utils import connect_to_db
+from src.db_utils import connect_to_db
 
 def map_to_card_series_enum(series_string):
     # Create a mapping directory
