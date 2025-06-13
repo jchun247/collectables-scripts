@@ -1,0 +1,26 @@
+services:
+  # Manual scripts - will exit after completion
+  import_cards-script:
+    build: .
+    env_file: .env
+    environment:
+      - PYTHONPATH=/scripts
+    command: ["src/import_cards.py"]
+    profiles: ["manual"]
+
+  import_sets-script:
+    build: .
+    env_file: .env
+    environment:
+      - PYTHONPATH=/scripts
+    command: ["src/import_sets.py"]
+    profiles: ["manual"]
+
+  # Scheduled script for ECS with EventBridge
+  daily-script:
+    build: .
+    env_file: .env
+    environment:
+      - PYTHONPATH=/scripts
+    command: ["src/run_price_imports.py"]
+    profiles: ["scheduled"]
