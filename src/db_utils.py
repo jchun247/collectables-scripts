@@ -2,6 +2,9 @@ import logging
 import os
 from sqlalchemy import create_engine, text
 from urllib.parse import quote_plus
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
