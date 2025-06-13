@@ -148,6 +148,22 @@ def process_card_prices(card_data):
             if 'reverseHolofoil' in prices:
                 insert_price_data(conn, card_id, prices['reverseHolofoil'], 'REVERSE_HOLO', condition, updated_at)
 
+            # Process 1st edition holofoil prices
+            if '1stEditionHolofoil' in prices:
+                insert_price_data(conn, card_id, prices['1stEditionHolofoil'], 'FIRST_EDITION_HOLOFOIL', condition, updated_at)
+
+            # Process unlimited holofoil prices
+            if 'unlimitedHolofoil' in prices:
+                insert_price_data(conn, card_id, prices['unlimitedHolofoil'], 'UNLIMITED_HOLOFOIL', condition, updated_at)
+
+            # Process normal 1st edition prices
+            if '1stEdition' in prices:
+                insert_price_data(conn, card_id, prices['1stEdition'], 'FIRST_EDITION', condition, updated_at)
+
+            # Process normal unlimited prices
+            if 'unlimited' in prices:
+                insert_price_data(conn, card_id, prices['unlimited'], 'UNLIMITED', condition, updated_at)
+
             logging.info(f"Successfully processed prices for card ID: {card_id}")
 
     except Exception as e:
