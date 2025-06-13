@@ -7,7 +7,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List
 import time
 from pathlib import Path
-from src.db_utils import connect_to_db
+from db_utils import connect_to_db
 from sqlalchemy import text
 
 # Configure logging
@@ -61,7 +61,7 @@ def process_endpoint(endpoint: str, max_retries: int = 3, retry_delay: int = 10)
     for attempt in range(max_retries):
         try:
             result = subprocess.run(
-                [sys.executable, "import_prices.py", endpoint],
+                [sys.executable, "-m", "src.import_prices", endpoint],
                 capture_output=True,
                 text=True,
                 check=True
