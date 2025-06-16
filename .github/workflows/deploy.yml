@@ -1,0 +1,132 @@
+name: Python CI/CD with Docker and AWS ECR/ECS
+
+on:
+  push:
+    branches: [ "main", "staging" ]
+
+jobs:
+  build_and_test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      # Add a step for running tests here if you have them
+      # - name: Test with pytest
+      #   run: |
+      #     pip install pytest
+      #     pytest
+
+  build_and_push_to_ecr:
+    name: Build and Push to ECR
+    needs: build_and_test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_digest: ${{ steps.build-image.outputs.digest }}
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Extract Docker metadata for ECR
+        id: meta_ecr
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}
+          tags: |
+            type=sha,prefix=${{ github.ref_name == 'staging' && 'staging-' || '' }},format=short
+            type=raw,value=latest,enable=${{ github.ref_name == 'main' }}
+            type=raw,value=staging-latest,enable=${{ github.ref_name == 'staging' }}
+      - name: Build and push Docker image to ECR
+        id: build-image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta_ecr.outputs.tags }}
+          labels: ${{ steps.meta_ecr.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy_to_ecs:
+    name: Deploy to ECS
+    needs: build_and_push_to_ecr
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+    permissions:
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Render and Register daily-script Task Definition
+        id: render-daily-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ vars.ECS_TASK_DEFINITION_FILE_DAILY }}
+          container-name: ${{ vars.CONTAINER_NAME_DAILY }}
+          image: ${{ needs.build_and_push_to_ecr.outputs.ecr_registry }}/${{ vars.ECR_REPOSITORY }}@${{ needs.build_and_push_to_ecr.outputs.image_digest }}
+      - name: Register daily-script Task Definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-daily-task-def.outputs.task-definition }}
+
+      - name: Render and Register import-cards-script Task Definition
+        id: render-cards-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ vars.ECS_TASK_DEFINITION_FILE_CARDS }}
+          container-name: ${{ vars.CONTAINER_NAME_CARDS }}
+          image: ${{ needs.build_and_push_to_ecr.outputs.ecr_registry }}/${{ vars.ECR_REPOSITORY }}@${{ needs.build_and_push_to_ecr.outputs.image_digest }}
+      - name: Register import-cards-script Task Definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-cards-task-def.outputs.task-definition }}
+
+      - name: Render and Register import-sets-script Task Definition
+        id: render-sets-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ vars.ECS_TASK_DEFINITION_FILE_SETS }}
+          container-name: ${{ vars.CONTAINER_NAME_SETS }}
+          image: ${{ needs.build_and_push_to_ecr.outputs.ecr_registry }}/${{ vars.ECR_REPOSITORY }}@${{ needs.build_and_push_to_ecr.outputs.image_digest }}
+      - name: Register import-sets-script Task Definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-sets-task-def.outputs.task-definition }}

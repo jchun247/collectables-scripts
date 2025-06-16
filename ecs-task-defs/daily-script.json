@@ -1,0 +1,61 @@
+{
+    "family": "collectables-price-importer-task",
+    "executionRoleArn": "arn:aws:iam::654654440171:role/ecsTaskExecutionRole",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "1024",
+    "memory": "2048",
+    "runtimePlatform": {
+        "cpuArchitecture": "X86_64",
+        "operatingSystemFamily": "LINUX"
+    },
+    "containerDefinitions": [
+        {
+            "name": "daily-price-importer",
+            "image": "654654440171.dkr.ecr.us-east-2.amazonaws.com/collectables/importer",
+            "cpu": 0,
+            "portMappings": [],
+            "essential": true,
+            "command": [
+                "src/run_price_imports.py"
+            ],
+            "environment": [
+                {
+                    "name": "PYTHONPATH",
+                    "value": "/scripts"
+                }
+            ],
+            "secrets": [
+                {
+                    "name": "APP_LIQUIBASE_PASSWORD",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-2:654654440171:secret:staging/collectables/db-credentials-liquibase-2qpOSI:password::"
+                },
+                {
+                    "name": "APP_LIQUIBASE_USER",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-2:654654440171:secret:staging/collectables/db-credentials-liquibase-2qpOSI:username::"
+                },
+                {
+                    "name": "DB_URL",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-2:654654440171:secret:staging/collectables/db-credentials-KTdoSV:host::"
+                },
+                {
+                    "name": "API_TOKEN",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-2:654654440171:secret:staging/collectables/pokemontcg-api-B2NsGb:api-token::"
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/collectables-price-importer-task",
+                    "mode": "non-blocking",
+                    "awslogs-create-group": "true",
+                    "max-buffer-size": "25m",
+                    "awslogs-region": "us-east-2",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            }
+        }
+    ]
+}
