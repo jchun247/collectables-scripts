@@ -3,6 +3,8 @@ import logging
 from sqlalchemy import text, inspect
 import os
 from src.db_utils import connect_to_db
+from data.promo_set_formatting_rules import PROMO_SET_RULES
+from data.gallery_set_formatting_rules import format_gallery_card_number
 
 def get_set_id_from_filename(file_path, conn):
     """Get set id from filename"""
@@ -44,22 +46,30 @@ def check_if_set_after_swsh(set_id, conn):
     row = result.fetchone()
     return row[0] if row else False
 
-def create_card_set_number(set_number, total_cards, is_modern_set):
+def get_series_from_set_id(set_id):
+    """Extracts the series from the set ID, removing 'p' if present."""
+    if set_id.endswith('p'):
+        return set_id[:-1]
+    return set_id
+
+def create_card_set_number(set_id, set_number, total_cards, is_modern_set):
     """Create a standardized card set number in format XXX/YYY or PREFIX00/PREFIX00"""
     if not set_number or not set_number.strip():
         return None
+    
+    # Handle promo sets (sets ending in 'p')
+    if set_id.endswith('p'):
+        series = get_series_from_set_id(set_id)
+        rule = PROMO_SET_RULES.get(set_id, PROMO_SET_RULES["default"])
+        return rule(series, set_number)
 
-    # Check for gallery patterns (TG01/TG30 or GG04/GG70)
-    import re
-    gallery_match = re.match(r'^(TG|GG)(\d+)(?:/(?:TG|GG)\d+)?$', set_number)
-    if gallery_match:
-        prefix = gallery_match.group(1)  # TG or GG
-        number = int(gallery_match.group(2))
-        # Always use 2-digit padding for gallery cards
-        formatted_number = f"{number:02d}"
-        return f"{prefix}{formatted_number}/{prefix}{total_cards}"
+    # Handle gallery sets (ending in 'tg' or 'gg')
+    if set_id.endswith('tg') or set_id.endswith('gg'):
+        return format_gallery_card_number(set_id, set_number, total_cards)
 
     # Handle regular card numbers
+    import re
+    
     parts = set_number.split('/')
     if not parts:
         return None
@@ -429,7 +439,7 @@ def import_cards(file_path):
             cards_processed = 0
             for item in data:
                 # Create standardized set number
-                set_number = create_card_set_number(item['number'], total_cards, is_modern_set)
+                set_number = create_card_set_number(set_id, item['number'], total_cards, is_modern_set)
                 
                 # Base card data that applies to all types
                 card_data = {
