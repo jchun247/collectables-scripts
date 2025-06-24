@@ -6,51 +6,31 @@ from src.db_utils import connect_to_db
 from data.promo_set_formatting_rules import PROMO_SET_RULES
 from data.gallery_set_formatting_rules import format_gallery_card_number
 
-def get_set_id_from_filename(file_path, conn):
-    """Get set id from filename"""
-    # Extract id from filename (remove .json extension and path)
-    set_id = os.path.splitext(os.path.basename(file_path))[0]
-    
-    # Verify the set exists in database
-    result = conn.execute(
-        text("SELECT id FROM sets WHERE id = :id"),
-        {"id": set_id}
-    )
-    if not result.fetchone():
-        logging.error(f"No set found with id: {set_id}")
-        raise ValueError(f"Set id '{set_id}' not found in database")
-    return set_id  # Return the set_id string directly
-
-def get_set_printedtotal(set_id, conn):
-    """Get printed_total for a set"""
-    result = conn.execute(
-        text("SELECT printed_total FROM sets WHERE id = :id"),
-        {"id": set_id}
-    )
-    row = result.fetchone()
-    if row:
-        return row[0]
-    return None
-
-def check_if_set_after_swsh(set_id, conn):
-    """Check if set is after Sword & Shield base set"""
-    result = conn.execute(
-        text("""
-            SELECT series = 'SCARLET_AND_VIOLET' OR 
-                  (series = 'SWORD_AND_SHIELD' AND release_date >= 
-                   (SELECT release_date FROM sets WHERE id = 'swsh1'))
-            FROM sets WHERE id = :id
-        """),
-        {"id": set_id}
-    )
-    row = result.fetchone()
-    return row[0] if row else False
-
 def get_series_from_set_id(set_id):
     """Extracts the series from the set ID, removing 'p' if present."""
     if set_id.endswith('p'):
         return set_id[:-1]
     return set_id
+
+def get_set_details(set_id, conn):
+    """
+    Gets all required set details in a single query.
+    """
+    query = text("""
+        SELECT 
+            id, 
+            printed_total,
+            series = 'SCARLET_AND_VIOLET' OR 
+            (series = 'SWORD_AND_SHIELD' AND release_date >= 
+             (SELECT release_date FROM sets WHERE id = 'swsh1')) as is_modern
+        FROM sets 
+        WHERE id = :id
+    """)
+    result = conn.execute(query, {"id": set_id}).fetchone()
+    if not result:
+        # get_set_id_from_filename already handles the error, but this is good practice
+        raise ValueError(f"Set id '{set_id}' not found in database")
+    return result
 
 def create_card_set_number(set_id, set_number, total_cards, is_modern_set):
     """Create a standardized card set number in format XXX/YYY or PREFIX00/PREFIX00"""
@@ -69,7 +49,7 @@ def create_card_set_number(set_id, set_number, total_cards, is_modern_set):
 
     # Handle regular card numbers
     import re
-    
+
     parts = set_number.split('/')
     if not parts:
         return None
@@ -91,307 +71,14 @@ def create_card_set_number(set_id, set_number, total_cards, is_modern_set):
     suffix = original_number[end:]
     
     if is_modern_set:
-        # Modern sets use fixed leading zeros
-        if number < 10:
-            formatted_number = f"00{number}"
-        elif number < 100:
-            formatted_number = f"0{number}"
-        else:
-            formatted_number = str(number)
+        # :03d means "format as a decimal, padded with leading zeros to 3 digits".
+        formatted_number = f"{number:03d}"
     else:
         # Legacy sets use original number without padding
         formatted_number = str(number)
     
     # Reconstruct the number with any original prefix/suffix preserved exactly
     return f"{prefix}{formatted_number}{suffix}/{total_cards}"
-
-def check_card_exists(conn, external_id, set_id):
-    """Check if a card exists by external_id and set_id"""
-    result = conn.execute(
-        text("SELECT id FROM cards WHERE external_id = :external_id AND set_id = :set_id"),
-        {"external_id": external_id, "set_id": set_id}
-    )
-    row = result.fetchone()
-    return row[0] if row else None
-
-def sync_card_attacks(conn, pokemon_details_id, attacks):
-    """Synchronize card attacks and their costs"""
-    current_attacks = conn.execute(
-        text("SELECT id, name, damage, text FROM card_attacks WHERE card_pokemon_details_id = :pokemon_details_id"),
-        {"pokemon_details_id": pokemon_details_id}
-    ).fetchall()
-    
-    processed = set()
-    attack_map = {a.name: a for a in current_attacks} if current_attacks else {}
-    
-    for attack in attacks:
-        name = attack.get('name')
-        existing = attack_map.get(name)
-        
-        if existing:
-            conn.execute(text("UPDATE card_attacks SET damage = :damage, text = :text WHERE id = :id"), 
-                       {'id': existing.id, 'damage': attack.get('damage'), 'text': attack.get('text')})
-            attack_id = existing.id
-            processed.add(attack_id)
-        else:
-            result = conn.execute(text("""
-                INSERT INTO card_attacks (card_pokemon_details_id, name, damage, text) 
-                VALUES (:pokemon_details_id, :name, :damage, :text) 
-                RETURNING id"""),
-                {'pokemon_details_id': pokemon_details_id, 'name': name, 'damage': attack.get('damage'), 'text': attack.get('text')})
-            attack_id = result.fetchone()[0]
-        
-        # Handle attack costs
-        costs = attack.get('cost', ['FREE'])
-        
-        # Delete existing costs for this attack before reinserting
-        conn.execute(text("DELETE FROM card_attack_costs WHERE attack_id = :attack_id"), {"attack_id": attack_id})
-        
-        # Insert all costs, including duplicates
-        for cost in costs:
-            conn.execute(text("INSERT INTO card_attack_costs (attack_id, cost) VALUES (:attack_id, :cost)"),
-                        {'attack_id': attack_id, 'cost': cost})
-    
-    # Remove old attacks
-    for attack in current_attacks or []:
-        if attack.id not in processed:
-            conn.execute(text("DELETE FROM card_attacks WHERE id = :id"), {"id": attack.id})
-
-def sync_card_abilities(conn, pokemon_details_id, abilities):
-    """Synchronize card abilities"""
-    current = conn.execute(
-        text("SELECT id, name, text, type FROM card_abilities WHERE card_pokemon_details_id = :pokemon_details_id"),
-        {"pokemon_details_id": pokemon_details_id}
-    ).fetchall()
-    
-    processed = set()
-    ability_map = {a.name: a for a in current} if current else {}
-    
-    for ability in abilities:
-        name = ability.get('name')
-        existing = ability_map.get(name)
-        
-        if existing:
-            conn.execute(text("UPDATE card_abilities SET text = :text, type = :type WHERE id = :id"), 
-                       {'id': existing.id, 'text': ability.get('text'), 'type': ability.get('type')})
-            processed.add(existing.id)
-        else:
-            result = conn.execute(text("""
-                INSERT INTO card_abilities (card_pokemon_details_id, name, text, type) 
-                VALUES (:pokemon_details_id, :name, :text, :type) 
-                RETURNING id"""),
-                {'pokemon_details_id': pokemon_details_id, 'name': name, 'text': ability.get('text'), 'type': ability.get('type')})
-            processed.add(result.fetchone()[0])
-    
-    # Remove old abilities
-    for ability in current or []:
-        if ability.id not in processed:
-            conn.execute(text("DELETE FROM card_abilities WHERE id = :id"), {"id": ability.id})
-
-def sync_card_types(conn, pokemon_details_id, types):
-    """Synchronize card types"""
-    current = conn.execute(
-        text("SELECT type FROM card_types WHERE card_pokemon_details_id = :pokemon_details_id"),
-        {"pokemon_details_id": pokemon_details_id}
-    ).fetchall()
-    
-    processed = set()
-    type_map = {t.type: t for t in current} if current else {}
-    
-    for card_type in types:
-        if card_type in type_map:
-            # No need to update since type value is the key and won't change
-            processed.add(card_type)
-        else:
-            conn.execute(text("""
-                INSERT INTO card_types (card_pokemon_details_id, type) 
-                VALUES (:pokemon_details_id, :type)"""),
-                {'pokemon_details_id': pokemon_details_id, 'type': card_type})
-            processed.add(card_type)
-    
-    # Remove old types
-    for type_row in current or []:
-        if type_row.type not in processed:
-            conn.execute(text("DELETE FROM card_types WHERE card_pokemon_details_id = :pokemon_details_id AND type = :type"),
-                       {"pokemon_details_id": pokemon_details_id, "type": type_row.type})
-
-def sync_card_subtypes(conn, card_id, subtypes):
-    """Synchronize card subtypes"""
-    current = conn.execute(
-        text("SELECT card_id, subtype FROM card_subtypes WHERE card_id = :card_id"),
-        {"card_id": card_id}
-    ).fetchall()
-    
-    processed = set()
-    subtype_map = {s.subtype: s for s in current} if current else {}
-    
-    for subtype in subtypes:
-        if subtype in subtype_map:
-            # No need to update since subtype value is the key and won't change
-            processed.add(subtype)
-        else:
-            conn.execute(text("INSERT INTO card_subtypes (card_id, subtype) VALUES (:card_id, :subtype)"),
-                       {'card_id': card_id, 'subtype': subtype})
-            processed.add(subtype)
-    
-    # Remove old subtypes
-    for subtype_row in current or []:
-        if subtype_row.subtype not in processed:
-            conn.execute(text("DELETE FROM card_subtypes WHERE card_id = :card_id AND subtype = :subtype"),
-                       {"card_id": card_id, "subtype": subtype_row.subtype})
-
-def sync_card_images(conn, card_id, images):
-    """Synchronize card images"""
-    current = conn.execute(
-        text("SELECT resolution, url FROM card_images WHERE card_id = :card_id"),
-        {"card_id": card_id}
-    ).fetchall()
-    
-    image_map = {i.resolution: i.url for i in current}
-    
-    for resolution, url in images.items():
-        if resolution not in image_map:
-            conn.execute(text("INSERT INTO card_images (card_id, resolution, url) VALUES (:card_id, :resolution, :url)"),
-                        {'card_id': card_id, 'resolution': resolution, 'url': url})
-        elif image_map[resolution] != url:
-            conn.execute(text("UPDATE card_images SET url = :url WHERE card_id = :card_id AND resolution = :resolution"),
-                        {'card_id': card_id, 'resolution': resolution, 'url': url})
-
-def sync_card_rules(conn, card_id, rules):
-    """Synchronize card rules"""
-    current = conn.execute(
-        text("SELECT id, text FROM card_rules WHERE card_id = :card_id"),
-        {"card_id": card_id}
-    ).fetchall()
-    
-    processed = set()
-    rule_map = {r.text: r for r in current} if current else {}
-    
-    for rule in rules:
-        if rule in rule_map:
-            processed.add(rule_map[rule].id)
-        else:
-            result = conn.execute(text("INSERT INTO card_rules (card_id, text) VALUES (:card_id, :text) RETURNING id"),
-                                {'card_id': card_id, 'text': rule})
-            processed.add(result.fetchone()[0])
-    
-    # Remove old rules
-    for rule_row in current or []:
-        if rule_row.id not in processed:
-            conn.execute(text("DELETE FROM card_rules WHERE id = :id"), {"id": rule_row.id})
-
-def update_pokemon_details(conn, card_id, pokemon_data):
-    """Update Pokemon-specific details for a card"""
-    # Check if Pokemon details exist
-    result = conn.execute(
-        text("SELECT id FROM card_pokemon_details WHERE card_id = :card_id"),
-        {"card_id": card_id}
-    )
-    pokemon_details_id = result.fetchone()
-    
-    if pokemon_details_id:
-        # Update existing Pokemon details
-        conn.execute(
-            text("""
-                UPDATE card_pokemon_details
-                SET hit_points = :hit_points,
-                    retreat_cost = :retreat_cost,
-                    flavour_text = :flavour_text,
-                    weakness_type = :weakness_type,
-                    weakness_modifier = :weakness_modifier,
-                    weakness_value = :weakness_value,
-                    resistance_type = :resistance_type,
-                    resistance_modifier = :resistance_modifier,
-                    resistance_value = :resistance_value
-                WHERE card_id = :card_id
-                RETURNING id
-            """),
-            {"card_id": card_id, **pokemon_data}
-        )
-    else:
-        # Insert new Pokemon details
-        pokemon_details_id = conn.execute(
-            text("""
-                INSERT INTO card_pokemon_details (
-                    card_id, hit_points, retreat_cost, flavour_text,
-                    weakness_type, weakness_modifier, weakness_value,
-                    resistance_type, resistance_modifier, resistance_value
-                ) VALUES (
-                    :card_id, :hit_points, :retreat_cost, :flavour_text,
-                    :weakness_type, :weakness_modifier, :weakness_value,
-                    :resistance_type, :resistance_modifier, :resistance_value
-                )
-                RETURNING id
-            """),
-            {"card_id": card_id, **pokemon_data}
-        ).fetchone()
-
-    return pokemon_details_id[0] if pokemon_details_id else None
-
-def update_card(conn, card_id, card_data, pokemon_data=None):
-    """Update an existing card"""
-    # Update base card data
-    query = """
-        UPDATE cards
-        SET name = :name,
-            game = 'POKEMON',
-            set_number = :set_number,
-            rarity = :rarity,
-            illustrator_name = :illustrator_name,
-            supertype = :supertype
-        WHERE id = :id
-        RETURNING id, set_number
-    """
-    
-    card_data['id'] = card_id
-    result = conn.execute(text(query), card_data)
-    row = result.fetchone()
-    
-    # Update Pokemon details if applicable
-    if pokemon_data:
-        update_pokemon_details(conn, card_id, pokemon_data)
-    
-    return row
-
-def insert_card(conn, card_data, pokemon_data=None):
-    """Insert a single card or update if it already exists"""
-    # Check if card exists
-    card_id = check_card_exists(conn, card_data['external_id'], card_data['set_id'])
-    
-    if card_id:
-        # Update the card
-        row = update_card(conn, card_id, card_data, pokemon_data)
-    else:
-        # Insert base card data
-        query = """
-            INSERT INTO cards (
-                name, game, external_id, set_id, set_number, rarity, 
-                illustrator_name, supertype
-            )
-            VALUES (
-                :name, 'POKEMON', :external_id, :set_id, :set_number, :rarity, 
-                :illustrator_name, :supertype
-            )
-            RETURNING id, set_number
-        """
-        
-        result = conn.execute(text(query), card_data)
-        row = result.fetchone()
-    
-    if row:
-        # Try different ways to access the ID
-        try:
-            card_id = row._mapping['id']  # SQLAlchemy result row
-        except (KeyError, AttributeError):
-            try:
-                card_id = row['id']  # Dict-like access
-            except (KeyError, TypeError):
-                card_id = row[0]  # Tuple-like access
-        # Create Pokemon card
-        if pokemon_data:
-            update_pokemon_details(conn, card_id, pokemon_data)
-    
-    return row
 
 def get_json_files(directory='./data/cards'):
     """Get all JSON files in the specified directory"""
@@ -405,8 +92,186 @@ def get_json_files(directory='./data/cards'):
         logging.error(f"Error reading directory {directory}: {e}")
         raise
 
+def _sync_cards_table_bulk(conn, card_data_list):
+    """
+    Handles the bulk "upsert" for the main cards table.
+    Returns a dictionary mapping {external_id: database_id}.
+    """
+    if not card_data_list:
+        return {}
+
+    # This statement inserts new cards. If a card with the same external_id and set_id
+    # already exists (violating a unique constraint), it updates the specified fields instead.
+    # It then returns the definitive database ID and external_id for all processed rows.
+    stmt = text("""
+        INSERT INTO cards (
+            external_id, set_id, name, set_number, rarity, illustrator_name, supertype, game
+        )
+        VALUES (
+            :external_id, :set_id, :name, :set_number, :rarity, :illustrator_name, :supertype, 'POKEMON'
+        )
+        ON CONFLICT (external_id, set_id) DO UPDATE SET
+            name = EXCLUDED.name,
+            set_number = EXCLUDED.set_number,
+            rarity = EXCLUDED.rarity,
+            illustrator_name = EXCLUDED.illustrator_name,
+            supertype = EXCLUDED.supertype
+        RETURNING id, external_id;
+    """)
+    
+    result = conn.execute(stmt, card_data_list)
+    return {row.external_id: row.id for row in result}
+
+def _sync_pokemon_details_bulk(conn, pokemon_details_list, external_id_to_db_id):
+    """
+    Handles the bulk "upsert" for the card_pokemon_details table.
+    Returns a dictionary mapping {database_card_id: pokemon_details_id}.
+    """
+    if not pokemon_details_list:
+        return {}
+        
+    # Before inserting, replace the temporary external_id with the real card_id from the database.
+    for detail in pokemon_details_list:
+        detail['card_id'] = external_id_to_db_id.get(detail['external_id'])
+        if not detail['card_id']:
+            logging.warning(f"Skipping Pokémon detail for missing card external_id: {detail['external_id']}")
+
+    # Filter out any details that couldn't be mapped to a card_id
+    valid_details = [d for d in pokemon_details_list if 'card_id' in d and d['card_id'] is not None]
+    if not valid_details:
+        return {}
+
+    stmt = text("""
+        INSERT INTO card_pokemon_details (
+            card_id, hit_points, retreat_cost, flavour_text,
+            weakness_type, weakness_modifier, weakness_value,
+            resistance_type, resistance_modifier, resistance_value
+        ) VALUES (
+            :card_id, :hit_points, :retreat_cost, :flavour_text,
+            :weakness_type, :weakness_modifier, :weakness_value,
+            :resistance_type, :resistance_modifier, :resistance_value
+        )
+        ON CONFLICT (card_id) DO UPDATE SET
+            hit_points = EXCLUDED.hit_points,
+            retreat_cost = EXCLUDED.retreat_cost,
+            flavour_text = EXCLUDED.flavour_text,
+            weakness_type = EXCLUDED.weakness_type,
+            weakness_modifier = EXCLUDED.weakness_modifier,
+            weakness_value = EXCLUDED.weakness_value,
+            resistance_type = EXCLUDED.resistance_type,
+            resistance_modifier = EXCLUDED.resistance_modifier,
+            resistance_value = EXCLUDED.resistance_value
+        RETURNING id, card_id;
+    """)
+    
+    result = conn.execute(stmt, valid_details)
+    return {row.card_id: row.id for row in result}
+
+def _sync_attacks_and_costs_bulk(conn, attacks_list, details_id_map, external_id_to_db_id):
+    """
+    Handles the complex bulk insert for attacks and their associated costs.
+    """
+    if not attacks_list:
+        return
+
+    # Map the pokemon_details_id to each attack
+    for attack in attacks_list:
+        card_id = external_id_to_db_id.get(attack['external_id'])
+        attack['card_pokemon_details_id'] = details_id_map.get(card_id)
+
+    valid_attacks = [a for a in attacks_list if a.get('card_pokemon_details_id') is not None]
+    if not valid_attacks:
+        return
+
+    # 1. Bulk insert all attacks and get their new database IDs
+    attack_stmt = text("""
+        INSERT INTO card_attacks (card_pokemon_details_id, name, damage, text)
+        VALUES (:card_pokemon_details_id, :name, :damage, :text)
+        RETURNING id, card_pokemon_details_id, name;
+    """)
+    
+    inserted_attacks = conn.execute(attack_stmt, valid_attacks).fetchall()
+
+    # 2. Create a map to link an attack (by details_id and name) to its new attack_id
+    attack_id_map = {
+        (attack.card_pokemon_details_id, attack.name): attack.id 
+        for attack in inserted_attacks
+    }
+
+    # 3. Prepare the list of costs for bulk insertion
+    costs_to_insert = []
+    for attack_data in valid_attacks:
+        attack_id = attack_id_map.get((attack_data['card_pokemon_details_id'], attack_data['name']))
+        if attack_id:
+            for cost in attack_data.get('cost', ['FREE']):
+                costs_to_insert.append({'attack_id': attack_id, 'cost': cost})
+
+    # 4. Bulk insert all costs
+    if costs_to_insert:
+        cost_stmt = text("INSERT INTO card_attack_costs (attack_id, cost) VALUES (:attack_id, :cost)")
+        conn.execute(cost_stmt, costs_to_insert)
+
+def sync_all_data_bulk(conn, set_id, card_data_list, pokemon_details_list, subtypes_list, images_list, rules_list, attacks_list, abilities_list, types_list):
+    """
+    Orchestrates the entire bulk sync process for a set using the "Delete-Then-Insert" pattern.
+    """
+    # Step 1: Sync the main 'cards' table and get a map of {external_id -> db_id}
+    logging.info("Syncing main card data...")
+    external_id_to_db_id = _sync_cards_table_bulk(conn, card_data_list)
+    
+    if not external_id_to_db_id:
+        logging.warning(f"No cards were synced for set {set_id}. Aborting.")
+        return
+
+    all_card_ids = list(external_id_to_db_id.values())
+
+    # Step 2: Sync 'card_pokemon_details' and get a map of {card_id -> details_id}
+    logging.info("Syncing Pokémon details...")
+    details_id_map = _sync_pokemon_details_bulk(conn, pokemon_details_list, external_id_to_db_id)
+    all_details_ids = list(details_id_map.values())
+
+    # Step 3: Clean slate - Bulk delete all existing child data for the set.
+    # Assumes ON DELETE CASCADE is set up for card_attack_costs. If not, delete costs first.
+    logging.info("Deleting old child data...")
+    if all_details_ids:
+        conn.execute(text("DELETE FROM card_attacks WHERE card_pokemon_details_id = ANY(:details_ids)"), {"details_ids": all_details_ids})
+        conn.execute(text("DELETE FROM card_abilities WHERE card_pokemon_details_id = ANY(:details_ids)"), {"details_ids": all_details_ids})
+        conn.execute(text("DELETE FROM card_types WHERE card_pokemon_details_id = ANY(:details_ids)"), {"details_ids": all_details_ids})
+
+    conn.execute(text("DELETE FROM card_subtypes WHERE card_id = ANY(:card_ids)"), {"card_ids": all_card_ids})
+    conn.execute(text("DELETE FROM card_images WHERE card_id = ANY(:card_ids)"), {"card_ids": all_card_ids})
+    conn.execute(text("DELETE FROM card_rules WHERE card_id = ANY(:card_ids)"), {"card_ids": all_card_ids})
+    
+    # Step 4: Bulk insert all new child data.
+    logging.info("Inserting new child data...")
+
+    # Map external_id to card_id for insertion
+    for s in subtypes_list: s['card_id'] = external_id_to_db_id.get(s.pop('external_id'))
+    if subtypes_list: conn.execute(text("INSERT INTO card_subtypes (card_id, subtype) VALUES (:card_id, :subtype)"), [s for s in subtypes_list if s['card_id']])
+    
+    for i in images_list: i['card_id'] = external_id_to_db_id.get(i.pop('external_id'))
+    if images_list: conn.execute(text("INSERT INTO card_images (card_id, resolution, url) VALUES (:card_id, :resolution, :url)"), [i for i in images_list if i['card_id']])
+
+    for r in rules_list: r['card_id'] = external_id_to_db_id.get(r.pop('external_id'))
+    if rules_list: conn.execute(text("INSERT INTO card_rules (card_id, text) VALUES (:card_id, :text)"), [r for r in rules_list if r['card_id']])
+    
+    # Map external_id to pokemon_details_id for insertion
+    for a in abilities_list: 
+        card_id = external_id_to_db_id.get(a.pop('external_id'))
+        a['card_pokemon_details_id'] = details_id_map.get(card_id)
+    if abilities_list: conn.execute(text("INSERT INTO card_abilities (card_pokemon_details_id, name, text, type) VALUES (:card_pokemon_details_id, :name, :text, :type)"), [a for a in abilities_list if a['card_pokemon_details_id']])
+
+    for t in types_list:
+        card_id = external_id_to_db_id.get(t.pop('external_id'))
+        t['card_pokemon_details_id'] = details_id_map.get(card_id)
+    if types_list: conn.execute(text("INSERT INTO card_types (card_pokemon_details_id, type) VALUES (:card_pokemon_details_id, :type)"), [t for t in types_list if t['card_pokemon_details_id']])
+
+    # Handle attacks and costs
+    _sync_attacks_and_costs_bulk(conn, attacks_list, details_id_map, external_id_to_db_id)
+
+    logging.info("Bulk sync complete.")
+
 def import_cards(file_path):
-    """Import cards from a JSON file into the database"""
     try:
         # Connect to database
         engine = connect_to_db()
@@ -419,21 +284,27 @@ def import_cards(file_path):
         logging.info(f"Reading data from {file_path}")
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            
-        # Add debug logging for first item
-        if data and len(data) > 0:
-            logging.info(f"First card data: id={data[0].get('id')}, name={data[0].get('name')}")
+        
+        # Prepares all data in memory before syncing with the database"""
+        card_data_list = []
+        pokemon_details_list = []
+        subtypes_list = []
+        images_list = []
+        rules_list = []
+        attacks_list = []
+        abilities_list = []
+        types_list = []
         
         logging.info(f"Processing {len(data)} cards")
         
         with engine.begin() as conn:
-            # Get set ID from filename
-            set_id = get_set_id_from_filename(file_path, conn)
+            # Retrieve set data
+            set_id = os.path.splitext(os.path.basename(file_path))[0]
+            set_details = get_set_details(set_id, conn)
+            total_cards = set_details.printed_total
+            is_modern_set = set_details.is_modern
+
             logging.info(f"Importing cards for set ID: {set_id}")
-            
-            # Get total cards in set for set number formatting
-            total_cards = get_set_printedtotal(set_id, conn)
-            is_modern_set = check_if_set_after_swsh(set_id, conn)
             
             # Process and insert all card data in a single pass
             cards_processed = 0
@@ -452,26 +323,43 @@ def import_cards(file_path):
                     'supertype': item.get('supertype')
                 }
 
-                # Handle Pokemon-specific data if applicable
-                pokemon_data = None
-                supertype = item.get('supertype', '')
-                if supertype == 'Pokémon':
+                card_data_list.append(card_data)
+                # Add related data to their respective lists, keyed by external_id
+                subtypes_list.extend([{'external_id': item['id'], 'subtype': s} for s in item.get('subtypes', [])])
+                images_list.extend([{'external_id': item['id'], 'resolution': r, 'url': u} for r, u in item.get('images', {}).items()])
+                rules_list.extend([{'external_id': item['id'], 'text': r} for r in item.get('rules', [])])
+
+                # Pokemon specific data
+                if item.get('supertype') == 'Pokémon':
                     # Extract weakness data
                     weakness = item.get('weaknesses', [{}])[0] if item.get('weaknesses') else {}
                     raw_weakness_value = weakness.get('value', '')
                     weakness_modifier = raw_weakness_value[0] if raw_weakness_value else None
-                    weakness_value = int(raw_weakness_value[1:]) if raw_weakness_value else None
+                    weakness_value = None
+                    # SAFER PARSING for weakness value:
+                    if len(raw_weakness_value) > 1:
+                        try:
+                            weakness_value = int(raw_weakness_value[1:])
+                        except ValueError:
+                            logging.warning(f"Could not parse weakness value from '{raw_weakness_value}' for card {item['id']}")
                     
                     # Extract resistance data
                     resistance = item.get('resistances', [{}])[0] if item.get('resistances') else {}
                     raw_resistance_value = resistance.get('value', '')
                     resistance_modifier = raw_resistance_value[0] if raw_resistance_value else None
-                    resistance_value = int(raw_resistance_value[1:]) if raw_resistance_value else None
+                    resistance_value = None
+                    # SAFER PARSING for resistance value:
+                    if len(raw_resistance_value) > 1:
+                        try:
+                            resistance_value = int(raw_resistance_value[1:])
+                        except ValueError:
+                            logging.warning(f"Could not parse resistance value from '{raw_resistance_value}' for card {item['id']}")
                     
                     # Convert HP to integer
                     hp = int(item.get('hp', 0)) if item.get('hp', '').isdigit() else None
 
                     pokemon_data = {
+                        'external_id': item['id'],
                         'flavour_text': item.get('flavorText'),
                         'hit_points': hp,
                         'retreat_cost': item.get('convertedRetreatCost', 0),
@@ -482,34 +370,19 @@ def import_cards(file_path):
                         'resistance_modifier': resistance_modifier,
                         'resistance_value': resistance_value
                     }
+                    pokemon_details_list.append(pokemon_data)
+                    # Add related pokemon details data
+                    attacks_list.extend([{'external_id': item['id'], **a} for a in item.get('attacks', [])])
+                    abilities_list.extend([{'external_id': item['id'], **a} for a in item.get('abilities', [])])
+                    types_list.extend([{'external_id': item['id'], 'type': t} for t in item.get('types', [])])
 
-                # Insert/update card
-                try:
-                    row = insert_card(conn, card_data, pokemon_data)
-                    if row:
-                        card_id = row[0]
-                        
-                        # Sync data common to all cards
-                        sync_card_subtypes(conn, card_id, item.get('subtypes', []))
-                        sync_card_images(conn, card_id, item.get('images', {}))
-                        sync_card_rules(conn, card_id, item.get('rules', []))
-                        
-                        # Sync Pokemon-specific data for Pokemon cards
-                        if supertype == 'Pokémon':
-                            pokemon_details_id = update_pokemon_details(conn, card_id, pokemon_data)
-                            if pokemon_details_id:
-                                sync_card_attacks(conn, pokemon_details_id, item.get('attacks', []))
-                                sync_card_abilities(conn, pokemon_details_id, item.get('abilities', []))
-                                sync_card_types(conn, pokemon_details_id, item.get('types', []))
-                        
-                        cards_processed += 1
-                except Exception as e:
-                    logging.error(f"Failed to process card: {card_data['name']} ({card_data['external_id']})")
-                    logging.error(f"Error: {str(e)}")
-                    raise
-                
-            logging.info(f"Processed {cards_processed} cards")
+                cards_processed += 1
 
+            # --- Sync all data for set ---
+            logging.info(f"Syncing {len(card_data_list)} cards for set {set_id}...")
+            sync_all_data_bulk(conn, set_id, card_data_list, pokemon_details_list, subtypes_list, images_list, rules_list, attacks_list, abilities_list, types_list)
+
+        logging.info(f"Processed {cards_processed} cards")
         logging.info(f"Successfully imported cards from file: {file_path}")
         
     except Exception as e:
@@ -537,5 +410,5 @@ if __name__ == '__main__':
             import_cards(file_path)
             
     except Exception as e:
-        logging.error(f"Script execution failed: {e}")
+        logging.exception(f"A critical error occurred during script execution: {e}")
         sys.exit(1)
