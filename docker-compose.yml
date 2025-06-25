@@ -16,6 +16,14 @@ services:
     command: ["src/import_sets.py"]
     profiles: ["manual"]
 
+  import_prices-script:
+    build: .
+    env_file: .env
+    environment:
+      - PYTHONPATH=/scripts
+    command: ["src/import_prices.py"]
+    profiles: ["manual"]
+
   # Scheduled script for ECS with EventBridge
   daily-script:
     build: .
