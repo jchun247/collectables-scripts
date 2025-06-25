@@ -48,6 +48,10 @@
                 {
                     "name": "DB_URL",
                     "valueFrom": "arn:aws:secretsmanager:us-east-2:654654440171:secret:staging/collectables/db-credentials-KTdoSV:host::"
+                },
+                {
+                    "name": "API_TOKEN",
+                    "valueFrom": "arn:aws:secretsmanager:us-east-2:654654440171:secret:staging/collectables/pokemontcg-api-B2NsGb:api-token::"
                 }
             ],
             "logConfiguration": {
