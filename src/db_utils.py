@@ -1,6 +1,6 @@
 import logging
 import os
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, Engine
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
@@ -27,14 +27,29 @@ ENCODED_DB_PASSWORD = quote_plus(DB_PASSWORD)
 # Construct database URI
 DB_URI = f'postgresql://{DB_USER}:{ENCODED_DB_PASSWORD}@{DB_URL}/collectables?options=-c%20search_path=collectables'
 
-def connect_to_db():
-    try:
-        engine = create_engine(DB_URI)
-        # Test connection
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        logging.info("Database connection successful")
-        return engine
-    except Exception as e:
-        logging.error(f"Database connection failed: {e}")
-        raise
+_engine: Engine | None = None
+
+def get_engine() -> Engine:
+    global _engine
+    
+    # Check if the engine has already been created
+    if _engine is None:
+        try:
+            # Create the engine instance
+            _engine = create_engine(DB_URI)
+            
+            # Test the connection the first time the engine is created
+            with _engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logging.info("Database engine created and connection successful.")
+            
+        except Exception as e:
+            logging.error(f"Database connection failed during initial setup: {e}")
+            # Set engine back to None on failure to allow for a retry if desired
+            _engine = None 
+            raise
+    
+    return _engine
+
+# For backwards compatibility, you can alias your old function name.
+connect_to_db = get_engine
