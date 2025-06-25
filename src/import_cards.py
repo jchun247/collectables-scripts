@@ -1,12 +1,91 @@
 import json
 import logging
-from sqlalchemy import text, inspect, Table, MetaData, Column, String, BigInteger, Integer
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 import os
 import re
+import sys
+import requests
+from sqlalchemy import text, Table, MetaData, Column, String, BigInteger
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from dotenv import load_dotenv
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
 from src.db_utils import connect_to_db
 from data.promo_set_formatting_rules import PROMO_SET_RULES
 from data.gallery_set_formatting_rules import format_gallery_card_number
+
+# Load environment variables
+load_dotenv()
+API_TOKEN = os.getenv('API_TOKEN')
+if not API_TOKEN:
+    raise ValueError("API_TOKEN environment variable is not set")
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(5),
+    retry=retry_if_exception_type((requests.exceptions.HTTPError, requests.exceptions.ConnectionError)),
+    before_sleep=lambda retry_state: logging.warning(f"Retrying API call due to: {retry_state.outcome.exception()}. Attempt #{retry_state.attempt_number}")
+)
+def get_with_retry(url: str, headers: dict):
+    """Makes a GET request and raises an exception for bad status codes."""
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return response
+
+def get_all_set_ids(engine):
+    """Retrieves all set IDs from the database, ordered by release date."""
+    with engine.connect() as conn:
+        logging.info("Retrieving all set IDs from the database...")
+        query = text("SELECT id FROM sets ORDER BY release_date")
+        result = conn.execute(query)
+        set_ids = [row[0] for row in result]
+        logging.info(f"Found {len(set_ids)} sets to process.")
+        return set_ids
+
+def fetch_all_cards_for_set(set_id: str):
+    """Fetch all card data for a specific set from the paginated API."""
+    # Select only the fields needed for the import process to reduce payload size
+    select_fields = ",".join([
+        "id", "name", "supertype", "subtypes", "hp", "types", "attacks",
+        "weaknesses", "resistances", "convertedRetreatCost", "number", 
+        "artist", "rarity", "flavorText", "rules", "images", "abilities"
+    ])
+    
+    api_url = f"https://api.pokemontcg.io/v2/cards?q=set.id:{set_id}&select={select_fields}"
+    all_cards = []
+    page = 1
+    headers = {'Authorization': f'Bearer {API_TOKEN}'}
+    
+    while True:
+        paginated_url = f"{api_url}&page={page}"
+        
+        try:
+            logging.info(f"Fetching page {page} for set {set_id} from API...")
+            response = get_with_retry(paginated_url, headers)
+
+            data = response.json()
+            page_cards = data.get('data', [])
+            if not page_cards:
+                logging.info(f"No more cards found on page {page}. Concluding API fetch for set {set_id}.")
+                break
+                
+            all_cards.extend(page_cards)
+            
+            total_count = data.get('totalCount', 0)
+            logging.info(f"Retrieved {len(page_cards)} cards. Total progress: {len(all_cards)}/{total_count}")
+
+            if len(all_cards) >= total_count:
+                logging.info(f"All cards for set {set_id} have been fetched from the API.")
+                break
+                
+            page += 1
+        except requests.exceptions.RequestException as e:
+            logging.error(f"API request failed for set {set_id}: {e}")
+            raise
+            
+    return all_cards
 
 def get_series_from_set_id(set_id):
     """Extracts the series from the set ID, removing 'p' if present."""
@@ -65,18 +144,6 @@ def create_combined_set_number(set_id, set_number, total_cards, is_modern_set):
     formatted_number = f"{number:03d}" if is_modern_set else str(number)
     
     return f"{prefix}{formatted_number}{suffix}/{total_cards}"
-
-def get_json_files(directory='./data/cards'):
-    """Get all JSON files in the specified directory"""
-    json_files = []
-    try:
-        for file in os.listdir(directory):
-            if file.endswith('.json'):
-                json_files.append(os.path.join(directory, file))
-        return json_files
-    except Exception as e:
-        logging.error(f"Error reading directory {directory}: {e}")
-        raise
 
 def _sync_cards_table_bulk(conn, card_data_list):
     """
@@ -284,25 +351,19 @@ def sync_all_data_bulk(conn, set_id, card_data_list, pokemon_details_list, subty
 
     logging.info("Bulk sync complete.")
 
-def import_cards(file_path):
+def process_and_import_cards(set_id, data):
+    """
+    Now fetches card data from the API and imports it into the database.
+    """
     try:
         engine = connect_to_db()
-        
-        if not os.path.isfile(file_path):
-            raise ValueError(f"File not found: {file_path}")
-            
-        logging.info(f"Reading data from {file_path}")
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        logging.info(f"Processing {len(data)} cards for set {set_id}")
         
         card_data_list, pokemon_details_list, subtypes_list, images_list, rules_list, attacks_list, abilities_list, types_list = [], [], [], [], [], [], [], []
-        
-        logging.info(f"Processing {len(data)} cards")
-        
+                
         with engine.begin() as conn:
-            set_id = os.path.splitext(os.path.basename(file_path))[0]
+            # set_id = os.path.splitext(os.path.basename(file_path))[0]
             set_details = get_set_details(set_id, conn)
-
             logging.info(f"Importing cards for set ID: {set_id}")
             
             for item in data:
@@ -340,27 +401,43 @@ def import_cards(file_path):
             logging.info(f"Syncing {len(card_data_list)} cards for set {set_id}...")
             sync_all_data_bulk(conn, set_id, card_data_list, pokemon_details_list, subtypes_list, images_list, rules_list, attacks_list, abilities_list, types_list)
 
-        logging.info(f"Successfully processed {len(data)} cards from file: {file_path}")
+        logging.info(f"Successfully processed {len(data)} cards from file: {set_id}")
         
     except Exception as e:
-        logging.error(f"Import failed: {str(e)}")
-        logging.error(f"Error occurred while processing file: {file_path}")
+        logging.error(f"Import failed for set {set_id}: {str(e)}")
         raise
 
 if __name__ == '__main__':
+    logging.info("Starting card import process for all sets.")
     try:
-        import sys
-        path_arg = sys.argv[1] if len(sys.argv) > 1 else './data/cards'
+        db_engine = connect_to_db()
+        all_set_ids = get_all_set_ids(db_engine)
+
+        if not all_set_ids:
+            logging.warning("No set IDs found in the database. Exiting.")
+            sys.exit(0)
+
+        for set_id in all_set_ids:
+            try:
+                logging.info(f"--- Processing set: {set_id} ---")
+                
+                # Step 1: Fetch data from API
+                card_data_for_set = fetch_all_cards_for_set(set_id)
+                if not card_data_for_set:
+                    logging.warning(f"No cards found for set {set_id} via API. Skipping.")
+                    continue
+                
+                # Step 2: Process and import the data for the current set
+                process_and_import_cards(set_id, card_data_for_set)
+                
+                logging.info(f"--- Successfully completed import for set: {set_id} ---")
+
+            except Exception as e:
+                # Log the error and continue with the next set
+                logging.error(f"An error occurred while processing set {set_id}. The script will continue.")
+                logging.exception(e)
         
-        files_to_process = get_json_files(path_arg) if os.path.isdir(path_arg) else [path_arg]
-        
-        if not files_to_process:
-            logging.error(f"No JSON files found in {path_arg}")
-            sys.exit(1)
-        
-        for json_file in files_to_process:
-            logging.info(f"Processing file: {json_file}")
-            import_cards(json_file)
+        logging.info("Full card import process finished for all sets.")
             
     except Exception as e:
         logging.exception(f"A critical error occurred during script execution: {e}")
